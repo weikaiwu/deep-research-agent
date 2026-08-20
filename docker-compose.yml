@@ -1,0 +1,32 @@
+# DeepAgents 深度搜索 —— docker compose 编排
+# 说明：Milvus / MySQL 为外部依赖（部署环境在 env/.env 中配置连接地址）
+#       模型（BGE-M3 / reranker）挂载宿主机目录，避免打入镜像
+services:
+  deepagents:
+    build: .
+    image: deepagents-research:latest
+    container_name: deepagents-research
+    ports:
+      - "8000:8000"
+    volumes:
+      # 挂载环境配置（含 API Key，不打入镜像）
+      - ./env:/app/env:ro
+      # 应用读取 /app/.env（指向 env/.env，保证挂载配置生效）
+      - ./env/.env:/app/.env:ro
+      # 挂载模型目录（BGE-M3 / reranker 等，宿主机路径按部署机调整）
+      - ${BGE_MODELS_DIR:-./models}:/models:ro
+      # 生成文件持久化
+      - ./output:/app/output
+      - ./updated:/app/updated
+    env_file:
+      - ./env/.env
+    restart: unless-stopped
+    # 部署机如需通过宿主机访问 Milvus：用 host.docker.internal 或直接配置内网 IP
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/docs')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s

@@ -1,0 +1,33 @@
+# ===== 环境密钥（绝不上传，含 OPENAI/TAVILY/MYSQL 等 Key）=====
+# .env 匹配任意目录下的 .env 文件（含部署形态的 env/.env）
+.env
+env/
+
+# ===== 虚拟环境 =====
+.venv/
+
+# ===== 模型目录（体积大，按部署机准备）=====
+models/
+
+# ===== 运行产物（生成的报告/上传的文件，体积大且可再生）=====
+output/
+updated/
+
+# ===== 本地备份（阶段快照，不入库）=====
+backup_stage5_20260820/
+
+# ===== 日志 =====
+*.log
+
+# ===== Python 缓存 =====
+__pycache__/
+*.py[cod]
+
+# ===== IDE =====
+.idea/
+
+# ===== 本地临时验证脚本（调试用，不入库）=====
+ddg_verify.py
+diag.py
+verify_mainline.py
+verify_server.log
