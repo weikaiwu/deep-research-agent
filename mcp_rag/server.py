@@ -61,6 +61,10 @@ def rag_search(query: str, top_k: int = 5) -> str:
 
 
 # ============ 工具 2：keyword_extract（项目二微调抽取，vLLM 端点）============
+# 核心逻辑在 tools/keyword_extract_tool.py（与主 Agent 工具同源，一份实现两处入口）
+from tools.keyword_extract_tool import keyword_extract_impl
+
+
 @mcp.tool
 def keyword_extract(text: str) -> str:
     """
@@ -71,35 +75,7 @@ def keyword_extract(text: str) -> str:
     Returns:
         抽取出的关键词列表（JSON）
     """
-    vllm_url = os.getenv("VLLM_BASE_URL")
-    model_name = os.getenv("VLLM_MODEL", "qwen2.5-7b-instruct-sft")
-    if not vllm_url:
-        return (
-            "未配置项目二微调模型服务（环境变量 VLLM_BASE_URL 为空）。"
-            "在 AutoDL 上部署 vLLM 后设置 VLLM_BASE_URL 即可启用。"
-        )
-    if not text.strip():
-        return "错误：text 不能为空"
-
-    try:
-        r = requests.post(
-            f"{vllm_url}/v1/chat/completions",
-            json={
-                "model": model_name,
-                "messages": [
-                    {"role": "system", "content": "你是关键词抽取器。从用户文本中抽取最重要的关键词，只输出关键词，用逗号分隔。"},
-                    {"role": "user", "content": text},
-                ],
-                "temperature": 0.0,
-                "max_tokens": 128,
-            },
-            timeout=60,
-        )
-        r.raise_for_status()
-        keywords = r.json()["choices"][0]["message"]["content"].strip()
-        return keywords
-    except Exception as e:
-        return f"关键词抽取失败: {e}"
+    return keyword_extract_impl(text)
 
 
 if __name__ == "__main__":

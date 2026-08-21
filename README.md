@@ -13,6 +13,7 @@
 - **调研中断恢复（ResearchFrame）**：每个任务建模为状态帧（LIFO 栈），同主题新任务自动复用已收集证据、从断点续跑，不重头搜索
 - **真实可验证的评估**：引用准确率（断言句带出处占比）、维度覆盖度（选型必答 checklist）、省时对比（人工 vs Agent 耗时）三项指标脚本化测量
 - **一键 Docker 部署**：应用容器化，外部依赖（MySQL / Milvus / 模型）按部署机配置挂载，密钥不打入镜像
+- **关键词抽取工具（keyword_extract）**：主 Agent 工具链直接挂载基于 Qwen2.5-7B 关键词抽取微调模型的 vLLM 服务（LoRA adapter 部署），可从调研材料中快速提炼核心关键词；同一实现同时暴露为 MCP 工具，供 Claude Desktop / Cursor 等 MCP 客户端消费
 
 ## 系统架构
 
@@ -50,6 +51,7 @@
 | LLM | Qwen 系列（百炼 API，联网搜索内置）、OpenAI 兼容接口 |
 | 检索 | BGE-M3 稠密+稀疏双向量、Milvus 混合检索、RRF 融合、BGE-reranker |
 | 数据 | MySQL（GitHub 仓库元数据，GitHub API 采集）、Tavily |
+| 微调模型 | Qwen2.5-7B 关键词抽取微调模型（QLoRA，vLLM + LoRA 部署） |
 | 服务 | FastAPI、WebSocket 流式、前端 Trace 可视化 |
 | 部署 | Docker Compose、requirements-lock.txt 锁定依赖 |
 
@@ -143,12 +145,12 @@ deepagents/
 │   └── prompts.py          #   提示词加载
 ├── api/                    # FastAPI 服务（REST + WebSocket 流式 + Trace）
 ├── engine/research_frame.py# 调研状态帧（断点续跑，LIFO 栈）
-├── tools/                  # Agent 工具（数据库/检索/搜索/文件/PDF）
+├── tools/                  # Agent 工具（数据库/检索/搜索/关键词抽取/文件/PDF）
 ├── rag/                    # BGE-M3 混合检索（稠密+稀疏、RRF、重排）
 ├── prompt/prompts.yml      # 主 Agent 系统提示词（调度规则/降级规则/引用要求）
 ├── scripts/                # GitHub 数据采集 / 报告评估
 ├── ui/                     # 前端（Trace 可视化）
-├── mcp_rag/                # RAG pipeline MCP Server（可选）
+├── mcp_rag/                # MCP Server：RAG 检索 + 关键词抽取（可选）
 ├── docker/                 # 部署文档
 ├── Dockerfile
 └── docker-compose.yml

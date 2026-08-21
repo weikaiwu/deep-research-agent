@@ -7,6 +7,7 @@ from langgraph.checkpoint.memory import InMemorySaver
 from tools.markdown_tools import generate_markdown
 from tools.pdf_tools import convert_md_to_pdf
 from tools.upload_file_read_tool import read_file_content
+from tools.keyword_extract_tool import keyword_extract  # 项目二微调模型（vLLM 服务）
 
 from deepagents import create_deep_agent
 
@@ -28,7 +29,7 @@ from langchain_core.messages import AIMessage
 main_agent = create_deep_agent(
    model = model,
    system_prompt=main_agent_content['system_prompt'],
-   tools= [generate_markdown,convert_md_to_pdf,read_file_content],
+   tools= [generate_markdown,convert_md_to_pdf,read_file_content,keyword_extract],
    checkpointer=InMemorySaver(),
    subagents=[
        database_query_agent,
