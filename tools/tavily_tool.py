@@ -11,6 +11,8 @@ from pathlib import Path
 
 # 自定义模块：工具调用埋点监控（需确保 api 模块可导入）
 from api.monitor import monitor
+# 容错：外部 API 指数退避重试（瞬时失败重试 2 次，再失败降级）
+from utils.retry import retry_with_backoff
 
 # ======================== 初始化配置 ========================
 # 直接定位项目根目录的 .env，避免 find_dotenv() 在无文件场景（如 python -c）下找不到 .env
@@ -72,40 +74,53 @@ def _ddg_to_tavily_style(query: str, max_results: int) -> dict:
     return {"results": items, "query": query}
 
 
+@retry_with_backoff(retries=2, base_delay=2.0)
+def _qwen_web_search_once(query: str, max_results: int) -> dict:
+    """单次 qwen 联网搜索请求。
+
+    失败直接抛异常（不内部吞掉）——异常冒到 retry 层触发指数退避重试，
+    重试耗尽后才由外层 _qwen_web_search 降级。
+    """
+    prompt = (
+        f"请联网检索关于「{query}」的权威最新资料。\n"
+        f"要求：\n"
+        f"1. 用要点列出检索到的客观事实；\n"
+        f"2. 每条要点后必须附上真实来源网页 URL（若确实无链接则标注「无链接」）；\n"
+        f"3. 不要展开主观分析，只列事实与来源。\n"
+        f"检索问题：{query}"
+    )
+    r = requests.post(
+        BASE_URL + "/chat/completions",
+        headers={"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"},
+        json={
+            "model": MODEL,
+            "messages": [{"role": "user", "content": prompt}],
+            "enable_search": True,
+        },
+        timeout=90,
+    )
+    r.raise_for_status()
+    content = r.json()["choices"][0]["message"]["content"]
+    # 包装成与 Tavily 兼容的单条结果（content 含要点+链接）
+    return {"results": [{"content": content, "url": "", "title": query, "score": 1.0}], "query": query}
+
+
 def _qwen_web_search(query: str, max_results: int) -> dict:
-    """使用 qwen-max 的联网搜索（enable_search）。
+    """使用 qwen-max 的联网搜索（enable_search），带指数退避重试 + 降级。
 
     关键点：langchain 的 ChatOpenAI 会把 enable_search 当成未知参数直接抛 TypeError，
     因此必须用 requests 直接打 dashscope 兼容接口（国内可达）。
 
+    容错策略（两级）：
+      1. 瞬时失败 → _qwen_web_search_once 内部重试 2 次（指数退避 2s/4s）
+      2. 重试耗尽 → 返回降级提示单条，不让主链路中断
+
     返回结构与 Tavily 兼容：{"results":[{content,url,title,score}],"query"}。
-    qwen 返回的是综合检索内容，这里要求模型按要点列出事实并附来源 URL，
-    以便下游 agent 引用、支撑"引用准确率"KPI。
     """
     try:
-        prompt = (
-            f"请联网检索关于「{query}」的权威最新资料。\n"
-            f"要求：\n"
-            f"1. 用要点列出检索到的客观事实；\n"
-            f"2. 每条要点后必须附上真实来源网页 URL（若确实无链接则标注「无链接」）；\n"
-            f"3. 不要展开主观分析，只列事实与来源。\n"
-            f"检索问题：{query}"
-        )
-        r = requests.post(
-            BASE_URL + "/chat/completions",
-            headers={"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"},
-            json={
-                "model": MODEL,
-                "messages": [{"role": "user", "content": prompt}],
-                "enable_search": True,
-            },
-            timeout=90,
-        )
-        r.raise_for_status()
-        content = r.json()["choices"][0]["message"]["content"]
-        # 包装成与 Tavily 兼容的单条结果（content 含要点+链接）
-        return {"results": [{"content": content, "url": "", "title": query, "score": 1.0}], "query": query}
+        return _qwen_web_search_once(query, max_results)
     except Exception as e:
+        # 重试耗尽后降级：返回提示单条，不让主链路中断
         return {"results": [{"content": f"[qwen 联网搜索暂不可用: {e}]", "url": "", "title": "", "score": 0.0}],
                 "query": query}
 

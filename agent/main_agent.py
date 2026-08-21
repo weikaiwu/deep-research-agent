@@ -60,6 +60,14 @@ project_root_path = Path(__file__).parents[1].resolve() # 绝对 解析路径标
 # 记录最近一次调度的子智能体名（tools 节点返回时用于标记"哪个子智能体执行完成"）
 _last_subagent_name = {"name": ""}
 
+# ============ 护栏参数（面试可讲：防无限搜索烧钱 / 防长任务挂死）============
+# LangGraph 最大递归步数：限制主 Agent 循环轮次上限（默认 25，这里放宽到 40 给足多轮调研空间，但仍封顶）
+MAX_RECURSION_LIMIT = 40
+# 工具调用次数上限：防 Agent 陷入反复调用工具的循环（成本护栏）
+MAX_TOOL_CALLS = 30
+# 单任务最长执行秒数：超时强制终止（长任务护栏）
+TASK_TIMEOUT_SECONDS = 600
+
 
 async def run_deep_agent(task_query,session_id):
     """
@@ -109,7 +117,10 @@ async def run_deep_agent(task_query,session_id):
     config = {
         "configurable":{
             "thread_id":session_id
-        }
+        },
+        # 循环轮次上限：LangGraph 达到 recursion_limit 会抛 GraphRecursionError，
+        # 由外层 try/except 捕获后向前端报告，避免"无限搜索烧钱"
+        "recursion_limit": MAX_RECURSION_LIMIT
     }
 
     # 构建提示词
@@ -147,8 +158,10 @@ async def run_deep_agent(task_query,session_id):
     """
     # 反馈结果
     start_time = time.time()
-    try:
-        # 执行
+
+    async def _consume_stream():
+        """消费主 Agent 流式输出；内含工具调用计数护栏，超限提前终止。"""
+        tool_call_count = 0
         async for chunk in main_agent.astream({
             "messages":[
                 {
@@ -193,6 +206,11 @@ async def run_deep_agent(task_query,session_id):
                             except Exception as e:
                                 print(f"[Frame] 标记完成失败: {e}")
                     elif node_name == 'tools':
+                        # 成本护栏：统计工具调用次数，超限提前终止
+                        tool_call_count += 1
+                        if tool_call_count > MAX_TOOL_CALLS:
+                            monitor._emit("error", f"工具调用次数超过上限 {MAX_TOOL_CALLS}，触发成本护栏，任务终止")
+                            return
                         # 工具/子智能体执行完后的返回消息（ToolMessage）
                         # 子智能体 = task 工具：返回内容即子智能体的最终输出
                         if getattr(last_msg, 'name', None) == 'task':
@@ -200,8 +218,14 @@ async def run_deep_agent(task_query,session_id):
                             summary = content[:200] if isinstance(content, str) else str(content)[:200]
                             monitor.report_assistant_end(_last_subagent_name["name"] or "子智能体", summary)
 
+    try:
+        # 长任务护栏：整体超时强制终止（防止任务无限挂起）
+        await asyncio.wait_for(_consume_stream(), timeout=TASK_TIMEOUT_SECONDS)
+    except asyncio.TimeoutError:
+        # 超时终止（长任务护栏触发）
+        monitor._emit("error", f"任务执行超过 {TASK_TIMEOUT_SECONDS}s，触发长任务护栏，任务终止")
     except Exception as e :
-        # 报错推送错误信息给前端
+        # 报错推送错误信息给前端（含 recursion_limit 触发的 GraphRecursionError）
         monitor._emit("error",f"执行主智能发生异常信息：{str(e)}")
     finally:
         # 耗时统计（省时对比 KPI 的 Agent 侧真实数据）
