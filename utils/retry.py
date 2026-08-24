@@ -6,9 +6,11 @@
   - 重试耗尽后异常继续向上抛，由调用方决定降级策略
   - 不引入 tenacity 依赖，~20 行自实现，逻辑可面试讲透
 """
-import time
-import logging
 import functools
+import logging
+import time
+
+logger = logging.getLogger(__name__)
 
 
 def retry_with_backoff(
@@ -40,10 +42,10 @@ def retry_with_backoff(
                     attempt += 1
                     if attempt > retries:
                         # 重试耗尽：把最后一次异常抛给调用方，由调用方降级
-                        logging.error(f"[Retry] {func.__name__} 重试 {retries} 次后仍失败: {e}")
+                        logger.error(f"[Retry] {func.__name__} 重试 {retries} 次后仍失败: {e}")
                         raise
                     delay = base_delay * (backoff_factor ** (attempt - 1))
-                    logging.warning(
+                    logger.warning(
                         f"[Retry] {func.__name__} 第 {attempt} 次调用失败 ({e})，"
                         f"{delay:.1f}s 后重试（共重试 {retries} 次）"
                     )

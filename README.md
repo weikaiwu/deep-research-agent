@@ -2,7 +2,7 @@
 
 基于 LangGraph 的多智能体深度调研系统。用户提出一个调研任务（如「对比 LangGraph / CrewAI / AutoGen 的 GitHub 活跃度，出一份带引用的选型报告」），系统自动编排 **1 个主 Agent + 3 个专业子 Agent**，经历「搜索 → 阅读 → 反思 → 再搜索」的多轮循环，最终产出带逐句引用来源的 Markdown / PDF 报告。
 
-![Python](https://img.shields.io/badge/Python-3.12-blue) ![LangGraph](https://img.shields.io/badge/LangGraph-1.x-orange) ![FastAPI](https://img.shields.io/badge/FastAPI-WebSocket-brightgreen) ![Milvus](https://img.shields.io/badge/Milvus-Hybrid%20Search-teal) ![Docker](https://img.shields.io/badge/Docker-ready-blueviolet)
+![Python](https://img.shields.io/badge/Python-3.12-blue) ![LangGraph](https://img.shields.io/badge/LangGraph-1.x-orange) ![FastAPI](https://img.shields.io/badge/FastAPI-WebSocket-brightgreen) ![Milvus](https://img.shields.io/badge/Milvus-Hybrid%20Search-teal) ![Docker](https://img.shields.io/badge/Docker-ready-blueviolet) ![CI](https://github.com/weikaiwu/deep-research-agent/actions/workflows/ci.yml/badge.svg)
 
 ## 特性
 

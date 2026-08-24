@@ -1,0 +1,27 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # 仅安装故障注入测试所需依赖（不含 torch/FlagEmbedding 等重型依赖）
+      # langchain-core 必须锁 1.5.4（与 requirements-lock.txt / 本地环境一致，新版 API 不兼容）
+      - name: Install test dependencies
+        run: pip install pytest ruff requests python-dotenv fastapi "langchain-core==1.5.4"
+
+      - name: Lint
+        run: ruff check scripts/test_fault_injection.py utils/retry.py
+
+      - name: Run fault injection tests
+        run: pytest scripts/test_fault_injection.py -v
