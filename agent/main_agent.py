@@ -75,8 +75,10 @@ MAX_RECURSION_LIMIT = 40
 MAX_TOOL_CALLS = 60
 # 子智能体派发次数上限：每次 task 调用背后都是一轮完整的子 Agent 循环
 MAX_DELEGATIONS = 20
-# token 累计预算：输入+输出合计，可用环境变量覆盖（不同模型单价差很多）
-MAX_TOTAL_TOKENS = int(os.getenv("MAX_TOTAL_TOKENS", "300000"))
+# token 累计预算：输入+输出合计。默认给到 1M，是为了只兜"失控"而不是误杀正常调研
+# （主 Agent 40 轮 + 3 个子智能体各约 20 轮，正常一次调研就可能烧到几十万 token）；
+# 可用环境变量按模型单价调整
+MAX_TOTAL_TOKENS = int(os.getenv("MAX_TOTAL_TOKENS", "1000000"))
 # 同一工具 + 同一参数允许重复的次数，超过判定为绕圈
 MAX_DUPLICATE_CALLS = 3
 # 单任务最长执行秒数：超时强制终止（长任务护栏）

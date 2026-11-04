@@ -146,7 +146,7 @@ docker compose up -d --build
 | 长任务超时 | `TASK_TIMEOUT_SECONDS = 600` | 防任务无限挂起 |
 | 全链路工具调用上限 | `MAX_TOOL_CALLS = 60` | 含子智能体内部的搜索/查库调用，防反复调用工具烧 token |
 | 子智能体派发上限 | `MAX_DELEGATIONS = 20` | 每次 `task` 调用背后都是一整轮子 Agent 循环 |
-| token 累计预算 | `MAX_TOTAL_TOKENS = 300000`（可用环境变量覆盖） | 输入+输出合计封顶，超预算直接中断 |
+| token 累计预算 | `MAX_TOTAL_TOKENS = 1000000`（可用环境变量覆盖） | 输入+输出合计封顶，超预算直接中断；默认留足正常调研余量，只兜失控 |
 | 重复调用检测 | `MAX_DUPLICATE_CALLS = 3` | 同一工具 + 同一参数（参数归一化后哈希）反复调用判定为绕圈 |
 
 后四项由 `engine/guardrails.py` 实现，计数挂在 callback handler 上：deepagents 的子智能体是在 `task` 工具里嵌套 `ainvoke` 跑的，既不计入主图步数、也不出现在父图 stream 里，只数顶层 `tools` 节点会漏掉绝大部分调用；而 `callbacks` 会经 langgraph 的 `ensure_config` 传播进子智能体，因此一次挂载即可覆盖整条链路。超限时抛 `BudgetExceededError`（配合 `handler.raise_error = True`）在工具/模型**真正执行前**中断，而不是等这一轮跑完。任务结束时预算用量（token / 工具调用 / 派发次数 / 重复调用榜）随 `budget` 事件推给前端。
