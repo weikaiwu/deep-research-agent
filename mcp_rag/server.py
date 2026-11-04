@@ -9,10 +9,10 @@ MCP Server：把项目一 RAG pipeline + 项目二微调抽取包成 MCP 工具
      需配置 VLLM_BASE_URL；未配置时返回说明）
 
 启动（stdio 模式，供 Claude Desktop / Cursor 消费）：
-    python mcp/server.py
+    python mcp_rag/server.py
 
 连接调试（MCP Inspector）：
-    npx @modelcontextprotocol/inspector python mcp/server.py
+    npx @modelcontextprotocol/inspector python mcp_rag/server.py
 """
 import os
 import sys
