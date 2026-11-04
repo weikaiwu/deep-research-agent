@@ -14,7 +14,7 @@
 - **真实可验证的评估**：引用准确率（断言句带出处占比）、维度覆盖度（选型必答 checklist）、省时对比（人工 vs Agent 耗时）三项指标脚本化测量
 - **一键 Docker 部署**：应用容器化，外部依赖（MySQL / Milvus / 模型）按部署机配置挂载，密钥不打入镜像
 - **关键词抽取工具（keyword_extract）**：主 Agent 工具链直接挂载基于 Qwen2.5-7B 关键词抽取微调模型的 vLLM 服务（LoRA adapter 部署），可从调研材料中快速提炼核心关键词；同一实现同时暴露为 MCP 工具，供 Claude Desktop / Cursor 等 MCP 客户端消费
-- **容错与护栏**：外部 API 指数退避重试（2 次）+ 失败降级不中断；主 Agent 三重护栏（循环上限 / 工具调用上限 / 长任务超时），故障注入测试脚本验证
+- **容错与护栏**：外部 API 指数退避重试（2 次）+ 失败降级不中断；主 Agent 六项护栏（循环上限 / 长任务超时 / 全链路工具调用上限 / 子智能体派发上限 / token 预算 / 重复调用检测），故障注入测试脚本验证
 
 ## 系统架构
 
@@ -143,10 +143,15 @@ docker compose up -d --build
 | 护栏 | 参数 | 作用 |
 |------|------|------|
 | 循环轮次上限 | `recursion_limit = 40` | 防"搜索→反思"循环无限执行 |
-| 工具调用上限 | `MAX_TOOL_CALLS = 30` | 成本护栏：防反复调用工具烧 token |
 | 长任务超时 | `TASK_TIMEOUT_SECONDS = 600` | 防任务无限挂起 |
+| 全链路工具调用上限 | `MAX_TOOL_CALLS = 60` | 含子智能体内部的搜索/查库调用，防反复调用工具烧 token |
+| 子智能体派发上限 | `MAX_DELEGATIONS = 20` | 每次 `task` 调用背后都是一整轮子 Agent 循环 |
+| token 累计预算 | `MAX_TOTAL_TOKENS = 300000`（可用环境变量覆盖） | 输入+输出合计封顶，超预算直接中断 |
+| 重复调用检测 | `MAX_DUPLICATE_CALLS = 3` | 同一工具 + 同一参数（参数归一化后哈希）反复调用判定为绕圈 |
 
-**故障注入测试**（`scripts/test_fault_injection.py`）：mock 外部依赖抛异常，验证 ①瞬时失败自动重试成功 ②重试耗尽异常上抛 ③护栏参数接线完整 ④搜索持续失败降级不中断 ⑤重试先于降级。5 项全通过。
+后四项由 `engine/guardrails.py` 实现，计数挂在 callback handler 上：deepagents 的子智能体是在 `task` 工具里嵌套 `ainvoke` 跑的，既不计入主图步数、也不出现在父图 stream 里，只数顶层 `tools` 节点会漏掉绝大部分调用；而 `callbacks` 会经 langgraph 的 `ensure_config` 传播进子智能体，因此一次挂载即可覆盖整条链路。超限时抛 `BudgetExceededError`（配合 `handler.raise_error = True`）在工具/模型**真正执行前**中断，而不是等这一轮跑完。任务结束时预算用量（token / 工具调用 / 派发次数 / 重复调用榜）随 `budget` 事件推给前端。
+
+**故障注入测试**（`scripts/test_fault_injection.py`）：mock 外部依赖抛异常，验证 ①瞬时失败自动重试成功 ②重试耗尽异常上抛 ③六项护栏参数与接线完整 ④搜索持续失败降级不中断 ⑤重试先于降级 ⑥重复调用检测/token 预算/工具与派发上限分别生效 ⑦预算异常可穿透回调层。9 项全通过。
 
 ## 评估指标（真实可验证）
 

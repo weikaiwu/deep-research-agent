@@ -125,6 +125,10 @@ class ToolMonitor:
         """报告任务工作目录"""
         self._emit("session_created", f"工作目录已创建: {path}", {"path": path})
 
+    def report_budget(self, summary: Dict[str, Any]):
+        """上报本次任务的执行预算用量（token / 工具调用 / 重复调用）"""
+        self._emit("budget", "任务执行预算用量", summary)
+
 
 # 全局单例实例
 monitor = ToolMonitor()

@@ -16,7 +16,14 @@ from agent.prompts import main_agent_content
 
 from api.monitor import monitor
 from engine.research_frame import research_frame_manager
+from engine.guardrails import (
+    BudgetCallbackHandler,
+    BudgetExceededError,
+    GuardrailLimits,
+    TaskBudget,
+)
 import asyncio
+import os
 import time
 import uuid
 import shutil
@@ -60,11 +67,18 @@ project_root_path = Path(__file__).parents[1].resolve() # 绝对 解析路径标
 # 记录最近一次调度的子智能体名（tools 节点返回时用于标记"哪个子智能体执行完成"）
 _last_subagent_name = {"name": ""}
 
-# ============ 护栏参数（面试可讲：防无限搜索烧钱 / 防长任务挂死）============
+# ============ 护栏参数（防无限搜索烧钱 / 防长任务挂死）============
 # LangGraph 最大递归步数：限制主 Agent 循环轮次上限（默认 25，这里放宽到 40 给足多轮调研空间，但仍封顶）
 MAX_RECURSION_LIMIT = 40
-# 工具调用次数上限：防 Agent 陷入反复调用工具的循环（成本护栏）
-MAX_TOOL_CALLS = 30
+# 全链路工具调用次数上限：含子智能体内部的搜索/查库调用（子智能体是嵌套 ainvoke，
+# 不计入主图步数，只数顶层 tools 节点会漏掉绝大部分调用）
+MAX_TOOL_CALLS = 60
+# 子智能体派发次数上限：每次 task 调用背后都是一轮完整的子 Agent 循环
+MAX_DELEGATIONS = 20
+# token 累计预算：输入+输出合计，可用环境变量覆盖（不同模型单价差很多）
+MAX_TOTAL_TOKENS = int(os.getenv("MAX_TOTAL_TOKENS", "300000"))
+# 同一工具 + 同一参数允许重复的次数，超过判定为绕圈
+MAX_DUPLICATE_CALLS = 3
 # 单任务最长执行秒数：超时强制终止（长任务护栏）
 TASK_TIMEOUT_SECONDS = 600
 
@@ -114,13 +128,27 @@ async def run_deep_agent(task_query,session_id):
     monitor.report_session_dir(session_dir_str)  # 当前会话对应的文件夹地址推送给起前端！
 
     # 执行main_agent
+    # 本次任务的预算账本：token 累计 / 全链路工具调用 / 重复调用检测。
+    # 计数挂在 callback 上，langgraph 的 ensure_config 会把它带进子智能体内部，
+    # 所以子智能体自己的搜索、查库调用也会被算进来。
+    budget = TaskBudget(
+        session_id=session_id,
+        limits=GuardrailLimits(
+            max_tool_calls=MAX_TOOL_CALLS,
+            max_delegations=MAX_DELEGATIONS,
+            max_total_tokens=MAX_TOTAL_TOKENS,
+            max_duplicate_calls=MAX_DUPLICATE_CALLS,
+        ),
+    )
     config = {
         "configurable":{
             "thread_id":session_id
         },
         # 循环轮次上限：LangGraph 达到 recursion_limit 会抛 GraphRecursionError，
         # 由外层 try/except 捕获后向前端报告，避免"无限搜索烧钱"
-        "recursion_limit": MAX_RECURSION_LIMIT
+        "recursion_limit": MAX_RECURSION_LIMIT,
+        # 预算护栏回调（BudgetExceededError 会穿透回调层中断执行）
+        "callbacks": [BudgetCallbackHandler(budget)],
     }
 
     # 构建提示词
@@ -160,8 +188,11 @@ async def run_deep_agent(task_query,session_id):
     start_time = time.time()
 
     async def _consume_stream():
-        """消费主 Agent 流式输出；内含工具调用计数护栏，超限提前终止。"""
-        tool_call_count = 0
+        """消费主 Agent 流式输出。
+
+        工具次数 / token 预算 / 重复调用的判定都在 BudgetCallbackHandler 里做，
+        这里只负责把告警推给前端；超限由回调抛异常中断，落到下面的 except 分支。
+        """
         async for chunk in main_agent.astream({
             "messages":[
                 {
@@ -169,6 +200,9 @@ async def run_deep_agent(task_query,session_id):
                 }
             ]
         },config=config):
+            # 预算预警（如 token 用到 80%）先推给前端，任务继续跑
+            for warning in budget.take_warnings():
+                monitor._emit("warning", warning)
             # {"model [大模型决定调用工具 子智能体  最终结果] / tools" : {messages:[xxx...]}}
             for node_name,state in chunk.items():
                 if not state or "messages" not in state: continue
@@ -206,11 +240,6 @@ async def run_deep_agent(task_query,session_id):
                             except Exception as e:
                                 print(f"[Frame] 标记完成失败: {e}")
                     elif node_name == 'tools':
-                        # 成本护栏：统计工具调用次数，超限提前终止
-                        tool_call_count += 1
-                        if tool_call_count > MAX_TOOL_CALLS:
-                            monitor._emit("error", f"工具调用次数超过上限 {MAX_TOOL_CALLS}，触发成本护栏，任务终止")
-                            return
                         # 工具/子智能体执行完后的返回消息（ToolMessage）
                         # 子智能体 = task 工具：返回内容即子智能体的最终输出
                         if getattr(last_msg, 'name', None) == 'task':
@@ -224,14 +253,28 @@ async def run_deep_agent(task_query,session_id):
     except asyncio.TimeoutError:
         # 超时终止（长任务护栏触发）
         monitor._emit("error", f"任务执行超过 {TASK_TIMEOUT_SECONDS}s，触发长任务护栏，任务终止")
+    except BudgetExceededError as e:
+        # 预算护栏触发（token / 工具次数 / 子智能体派发 / 重复调用）
+        monitor._emit("error", f"任务终止：{e}")
     except Exception as e :
-        # 报错推送错误信息给前端（含 recursion_limit 触发的 GraphRecursionError）
-        monitor._emit("error",f"执行主智能发生异常信息：{str(e)}")
+        if budget.violation:
+            # 预算异常可能被 langgraph 包装成别的异常类型，以账本记录为准
+            reason, detail = budget.violation
+            monitor._emit("error", f"任务终止：执行预算护栏触发[{reason}]：{detail}")
+        else:
+            # 报错推送错误信息给前端（含 recursion_limit 触发的 GraphRecursionError）
+            monitor._emit("error",f"执行主智能发生异常信息：{str(e)}")
     finally:
         # 耗时统计（省时对比 KPI 的 Agent 侧真实数据）
         elapsed = time.time() - start_time
         print(f"[耗时] 会话 {session_id} 端到端耗时: {elapsed:.1f}s")
         monitor._emit("info", f"任务耗时 {elapsed:.1f} 秒")
+        # 预算用量上报（token / 工具调用 / 重复调用），供前端与成本分析用
+        budget_summary = budget.summary()
+        monitor.report_budget(budget_summary)
+        print(f"[预算] 工具调用 {budget_summary['tool_calls']} 次 / "
+              f"子智能体 {budget_summary['delegations']} 次 / "
+              f"token {budget_summary['total_tokens']}（预算 {budget_summary['token_budget']}）")
         # 释放存储的地址和session_id
         reset_session_context(session_dir_token, session_id_token)
 
