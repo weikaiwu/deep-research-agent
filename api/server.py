@@ -2,8 +2,8 @@ import uuid
 import asyncio
 import uvicorn
 from pathlib import Path
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, Form
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File, Form, Header
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -20,8 +20,15 @@ sys.path.insert(0, str(project_root))
 # 注意：agent.main_agent 导入时会初始化 main_agent，这可能需要几秒钟
 from agent.main_agent import run_deep_agent
 from api.monitor import manager, monitor
+from engine.idempotency import IdempotencyState, IdempotencyStore, derive_key
 
 app = FastAPI(title="DeepAgents API")
+
+# 幂等判定：显式 Idempotency-Key 的重放窗口给 30 分钟；
+# 仅靠 (会话, 问题) 派生的键只防"连点/重试"，窗口 60 秒，过了允许重跑
+IDEMPOTENCY_TTL_SECONDS = 1800
+DEDUP_WINDOW_SECONDS = 60
+idempotency_store = IdempotencyStore(stale_seconds=900)
 
 # 挂载输出目录，以便前端访问生成的静态文件
 # 假设输出目录位于项目根目录下的 output
@@ -60,16 +67,64 @@ async def startup_event():
     print(f"[Server] WebSocket Manager bound to loop: {id(loop)}")
 
 
+async def _run_task_idempotent(query: str, thread_id: str, key: str) -> None:
+    """后台执行任务，并维护幂等记录（成功→完成；异常→立刻放行重试）。"""
+    try:
+        await run_deep_agent(query, thread_id)
+    except Exception:
+        idempotency_store.fail(key)
+        raise
+    idempotency_store.complete(key)
+
+
 @app.post("/api/task")
-async def run_task(request: TaskRequest):
-    # 1. [ID 初始化]
+async def run_task(
+    request: TaskRequest,
+    idempotency_key: str = Header(default=None, alias="Idempotency-Key"),
+):
+    # 1. [判重] 同一个任务重复提交只跑一次
+    #    有会话标识才判重：连 thread_id 都没有，无法区分"同一会话重试"和"另一个用户"
+    key = None
+    if idempotency_key:
+        key = f"explicit:{idempotency_key}"
+    elif request.thread_id:
+        key = derive_key(request.thread_id, request.query)
+
+    if key:
+        begin = idempotency_store.begin(
+            key,
+            thread_id=request.thread_id or "",
+            ttl_seconds=IDEMPOTENCY_TTL_SECONDS if idempotency_key else DEDUP_WINDOW_SECONDS,
+            allow_replay=bool(idempotency_key),
+        )
+        if begin.state is IdempotencyState.INFLIGHT:
+            return JSONResponse(
+                status_code=409,
+                content={
+                    "status": "duplicate",
+                    "message": "相同任务已在执行（或刚完成），已忽略本次重复提交",
+                    "thread_id": begin.record.thread_id,
+                    "hits": begin.record.hits,
+                },
+            )
+        if begin.state is IdempotencyState.REPLAY:
+            return {
+                "status": "replayed",
+                "thread_id": begin.record.thread_id,
+                "finished_at": begin.record.finished_at,
+            }
+
+    # 2. [ID 初始化]
     thread_id = request.thread_id or str(uuid.uuid4())
 
-    # 2. [后台执行] 异步运行 Agent，不阻塞主线程
+    # 3. [后台执行] 异步运行 Agent，不阻塞主线程
     # 注意：这里简单的使用 asyncio.create_task 触发，由 main_agent 内部负责实时推送
-    asyncio.create_task(run_deep_agent(request.query, thread_id))
+    if key:
+        asyncio.create_task(_run_task_idempotent(request.query, thread_id, key))
+    else:
+        asyncio.create_task(run_deep_agent(request.query, thread_id))
 
-    # 3. [立即响应]
+    # 4. [立即响应]
     return {"status": "started", "thread_id": thread_id}
 
 

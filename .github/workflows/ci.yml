@@ -21,7 +21,7 @@ jobs:
         run: pip install pytest ruff requests python-dotenv fastapi "langchain-core==1.5.4"
 
       - name: Lint
-        run: ruff check scripts/test_fault_injection.py utils/retry.py engine/guardrails.py
+        run: ruff check scripts/test_fault_injection.py scripts/test_idempotency.py utils/retry.py engine/guardrails.py engine/idempotency.py
 
-      - name: Run fault injection tests
-        run: pytest scripts/test_fault_injection.py -v
+      - name: Run guardrail / fault tolerance / idempotency tests
+        run: pytest scripts/test_fault_injection.py scripts/test_idempotency.py -v
